@@ -5,7 +5,7 @@ const initialMessages = [
   {
     id: "welcome",
     role: "assistant",
-    content: "Hello! 👋 I’m IM AI Assistant. Ask me anything."
+    content: "Hello! 👋 I’m IM AI. How can I help you today?"
   }
 ];
 
@@ -27,11 +27,11 @@ export default function App() {
           <div className="brand">
             <div className="brand-mark">IM</div>
             <div>
-              <h1>IM AI Assistant</h1>
-              <p><span className="status-dot" /> Online</p>
+              <h1>IM AI</h1>
+              <p><span className="status-dot" /> Gemini connected</p>
             </div>
           </div>
-          <button className="ghost-button" onClick={clearChat}>New chat</button>
+          <button className="ghost-button" onClick={clearChat}>＋ New chat</button>
         </header>
         <Chat messages={messages} onAddMessage={addMessage} />
       </section>
