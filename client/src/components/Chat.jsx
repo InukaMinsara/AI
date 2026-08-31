@@ -15,6 +15,9 @@ export default function Chat({ messages, onMessagesChange, versions, onRestoreVe
   }, [messages, loading]);
 
   async function requestAI(history, assistantId, { saveVersion = false } = {}) {
+    // Persist/render the user message before waiting for Gemini/network latency.
+    onMessagesChange(history);
+
     const response = await fetch(`${API_URL}/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -104,7 +107,6 @@ export default function Chat({ messages, onMessagesChange, versions, onRestoreVe
     setLoading(true);
 
     try {
-      // Save the edited branch as a new version after the streamed reply completes.
       await requestAI(history, crypto.randomUUID(), { saveVersion: true });
     } catch (error) {
       onMessagesChange(
