@@ -28,7 +28,14 @@ export default function App() {
   }, [messages]);
 
   function addMessage(message) {
-    setMessages((current) => [...current, message]);
+    setMessages((current) => {
+      if (message.replace) {
+        return current.map((item) =>
+          item.id === message.id ? { ...item, ...message, replace: undefined } : item
+        );
+      }
+      return [...current, message];
+    });
   }
 
   function clearChat() {
