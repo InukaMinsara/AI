@@ -3,115 +3,89 @@ import Message from "./Message.jsx";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000";
 
-export default function Chat({ messages, onAddMessage }) {
+export default function Chat({ messages, onMessagesChange, versions, onRestoreVersion }) {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const [editText, setEditText] = useState("");
   const messagesEndRef = useRef(null);
 
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, loading]);
+  useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, loading]);
+
+  async function requestAI(history, assistantId) {
+    const response = await fetch(`${API_URL}/chat`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ messages: history.map(({ role, content }) => ({ role, content })) }) });
+    if (!response.ok) {
+      let msg = "Request failed";
+      try { msg = (await response.json()).error || msg; } catch {}
+      throw new Error(msg);
+    }
+    if (!response.body) throw new Error("Streaming is not supported by this browser.");
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let reply = "";
+    onMessagesChange([...history, { id: assistantId, role: "assistant", content: "" }]);
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      reply += decoder.decode(value, { stream: true });
+      onMessagesChange([...history, { id: assistantId, role: "assistant", content: reply }]);
+    }
+    reply += decoder.decode();
+    onMessagesChange([...history, { id: assistantId, role: "assistant", content: reply }]);
+  }
 
   async function sendMessage(event) {
     event.preventDefault();
     const text = input.trim();
     if (!text || loading) return;
-
     const userMessage = { id: crypto.randomUUID(), role: "user", content: text };
     const history = [...messages, userMessage];
-    onAddMessage(userMessage);
-    setInput("");
+    setInput(""); setLoading(true);
+    try { await requestAI(history, crypto.randomUUID()); }
+    catch (error) { onMessagesChange([...history, { id: crypto.randomUUID(), role: "assistant", content: `Sorry, I couldn't respond. ${error.message}` }]); }
+    finally { setLoading(false); }
+  }
+
+  function startEdit(message) { setEditingId(message.id); setEditText(message.content); }
+
+  async function saveEdit(message) {
+    const text = editText.trim();
+    if (!text || loading) return;
+    const index = messages.findIndex((m) => m.id === message.id);
+    if (index < 0) return;
+    const edited = { ...message, content: text };
+    const history = [...messages.slice(0, index), edited];
+    setEditingId(null); setEditText(""); setLoading(true);
+    try { await requestAI(history, crypto.randomUUID()); }
+    catch (error) { onMessagesChange([...history, { id: crypto.randomUUID(), role: "assistant", content: `Sorry, I couldn't respond. ${error.message}` }]); }
+    finally { setLoading(false); }
+  }
+
+  async function regenerate(message) {
+    if (loading || message.role !== "assistant") return;
+    const index = messages.findIndex((m) => m.id === message.id);
+    const history = messages.slice(0, index);
+    if (!history.length) return;
     setLoading(true);
-
-    const assistantId = crypto.randomUUID();
-    onAddMessage({ id: assistantId, role: "assistant", content: "" });
-
-    try {
-      const response = await fetch(`${API_URL}/chat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          messages: history.map(({ role, content }) => ({ role, content }))
-        })
-      });
-
-      if (!response.ok) {
-        let errorMessage = "Request failed";
-        try {
-          const data = await response.json();
-          errorMessage = data.error || errorMessage;
-        } catch {}
-        throw new Error(errorMessage);
-      }
-
-      if (!response.body) throw new Error("Streaming is not supported by this browser.");
-
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let reply = "";
-
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        reply += decoder.decode(value, { stream: true });
-
-        onAddMessage({
-          id: assistantId,
-          role: "assistant",
-          content: reply,
-          replace: true
-        });
-      }
-
-      reply += decoder.decode();
-      onAddMessage({ id: assistantId, role: "assistant", content: reply, replace: true });
-    } catch (error) {
-      onAddMessage({
-        id: assistantId,
-        role: "assistant",
-        content: `Sorry, I couldn't respond. ${error.message}`,
-        replace: true
-      });
-    } finally {
-      setLoading(false);
-    }
+    try { await requestAI(history, crypto.randomUUID()); }
+    catch (error) { onMessagesChange([...history, { id: crypto.randomUUID(), role: "assistant", content: `Sorry, I couldn't respond. ${error.message}` }]); }
+    finally { setLoading(false); }
   }
 
-  function handleKeyDown(event) {
-    if (event.key === "Enter" && !event.shiftKey) {
-      event.preventDefault();
-      event.currentTarget.form?.requestSubmit();
-    }
-  }
+  function handleKeyDown(event) { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }
 
   return (
     <div className="chat-layout">
       <div className="messages" aria-live="polite">
-        {messages.map((message) => <Message key={message.id} {...message} />)}
-        {loading && messages.at(-1)?.role !== "assistant" && (
-          <div className="message-row assistant">
-            <div className="avatar">AI</div>
-            <div className="message-bubble typing">
-              <div className="message-role">IM AI</div>
-              <div>Thinking<span className="typing-dots">•••</span></div>
-            </div>
-          </div>
-        )}
+        {messages.map((message, index) => (
+          <Message key={message.id} {...message} editing={editingId === message.id} editText={editText} setEditText={setEditText} onEdit={() => startEdit(message)} onSaveEdit={() => saveEdit(message)} onCancelEdit={() => setEditingId(null)} onRegenerate={() => regenerate(message)} isLast={index === messages.length - 1} />
+        ))}
+        {loading && messages.at(-1)?.role !== "assistant" && <div className="message-row assistant"><div className="avatar">AI</div><div className="message-bubble typing"><div className="message-role">IM AI</div><div>Thinking<span className="typing-dots">•••</span></div></div></div>}
         <div ref={messagesEndRef} />
       </div>
-
-      <form className="composer" onSubmit={sendMessage}>
-        <input
-          value={input}
-          onChange={(event) => setInput(event.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder="Message IM AI..."
-          aria-label="Message IM AI"
-          disabled={loading}
-        />
-        <button type="submit" disabled={!input.trim() || loading} aria-label="Send message">➤</button>
-      </form>
-      <p className="disclaimer">V3 · Conversation memory is saved locally. IM AI can make mistakes.</p>
+      {versions.length > 1 && <div className="versions"><span>Versions:</span>{versions.map((v) => <button key={v.id} onClick={() => onRestoreVersion(v)} title="Restore this version">{v.label}</button>)}</div>}
+      <form className="composer" onSubmit={sendMessage}><input value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={handleKeyDown} placeholder="Message IM AI..." aria-label="Message IM AI" disabled={loading} /><button type="submit" disabled={!input.trim() || loading} aria-label="Send message">➤</button></form>
+      <p className="disclaimer">V4 · Chats, edits and versions are saved locally. IM AI can make mistakes.</p>
     </div>
   );
 }
