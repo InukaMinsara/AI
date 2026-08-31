@@ -3,7 +3,7 @@ import Message from "./Message.jsx";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000";
 
-export default function Chat({ messages, onMessagesChange, versions, onRestoreVersion }) {
+export default function Chat({ messages, onMessagesChange, versions, onRestoreVersion, memory }) {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [editingId, setEditingId] = useState(null);
@@ -15,14 +15,14 @@ export default function Chat({ messages, onMessagesChange, versions, onRestoreVe
   }, [messages, loading]);
 
   async function requestAI(history, assistantId, { saveVersion = false } = {}) {
-    // Persist/render the user message before waiting for Gemini/network latency.
     onMessagesChange(history);
 
     const response = await fetch(`${API_URL}/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        messages: history.map(({ role, content }) => ({ role, content }))
+        messages: history.map(({ role, content }) => ({ role, content })),
+        memory
       })
     });
 
@@ -228,7 +228,7 @@ export default function Chat({ messages, onMessagesChange, versions, onRestoreVe
       </form>
 
       <p className="disclaimer">
-        V4 · Chats, edits and versions are saved locally. IM AI can make mistakes.
+        V4 · Chats, edits, versions and remembered preferences are saved locally. IM AI can make mistakes.
       </p>
     </div>
   );
