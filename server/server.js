@@ -21,9 +21,17 @@ app.get("/health", (_req, res) => {
 app.post("/chat", async (req, res) => {
   try {
     const messages = Array.isArray(req.body?.messages) ? req.body.messages : [];
+    const memory = req.body?.memory && typeof req.body.memory === "object" ? req.body.memory : {};
+
     const cleanMessages = messages
-      .filter((item) => item && (item.role === "user" || item.role === "assistant") && typeof item.content === "string")
-      .slice(-30);
+      .filter(
+        (item) =>
+          item &&
+          (item.role === "user" || item.role === "assistant") &&
+          typeof item.content === "string" &&
+          item.content.trim()
+      )
+      .slice(-40);
 
     if (!process.env.GEMINI_API_KEY) {
       return res.status(500).json({ error: "GEMINI_API_KEY is not configured." });
@@ -38,11 +46,22 @@ app.post("/chat", async (req, res) => {
       parts: [{ text: item.content }]
     }));
 
+    const memoryLines = [];
+    if (typeof memory.name === "string" && memory.name.trim()) {
+      memoryLines.push(`The user's name is ${memory.name.trim()}.`);
+    }
+
+    const memoryInstruction = memoryLines.length
+      ? ` Persistent user memory (use naturally when relevant): ${memoryLines.join(" ")}`
+      : "";
+
     const stream = await ai.models.generateContentStream({
       model,
       contents,
       config: {
-        systemInstruction: "You are IM AI Assistant. Be helpful, clear, concise, friendly, and support Sinhala and English. Remember the conversation context provided in the request."
+        systemInstruction:
+          "You are IM AI Assistant. Be helpful, clear, concise, friendly, and support Sinhala and English. Use the conversation history to maintain context and answer follow-up questions naturally. Do not claim to remember information that is not present in the conversation or persistent memory." +
+          memoryInstruction
       }
     });
 
