@@ -3,6 +3,7 @@ import Chat from "./components/Chat.jsx";
 
 const STORAGE_KEY = "im-ai-chats-v4";
 const OLD_KEY = "im-ai-chat-history-v3";
+const MEMORY_KEY = "im-ai-memory-v1";
 
 function welcome() {
   return {
@@ -64,6 +65,15 @@ function loadChats() {
   return [makeChat()];
 }
 
+function loadMemory() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(MEMORY_KEY) || "{}");
+    return saved && typeof saved === "object" ? saved : {};
+  } catch {
+    return {};
+  }
+}
+
 function autoTitle(messages) {
   const first = messages.find(
     (message) => message.role === "user" && message.content?.trim()
@@ -75,9 +85,27 @@ function autoTitle(messages) {
   return text.length > 42 ? `${text.slice(0, 42)}…` : text;
 }
 
+function detectName(text) {
+  const patterns = [
+    /\bmy name is\s+([A-Za-z][A-Za-z '\u2019.-]{0,38})/i,
+    /\bi am\s+([A-Za-z][A-Za-z '\u2019.-]{0,38})/i,
+    /\bi'm\s+([A-Za-z][A-Za-z '\u2019.-]{0,38})/i,
+    /\bmage nama\s+([A-Za-z][A-Za-z '\u2019.-]{0,38})/i
+  ];
+
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match?.[1]) {
+      return match[1].trim().replace(/[.,!?]+$/, "");
+    }
+  }
+
+  return null;
+}
+
 export default function App() {
-  // Load once. Calling loadChats() twice creates two different random chat IDs.
   const [chats, setChats] = useState(loadChats);
+  const [memory, setMemory] = useState(loadMemory);
   const [activeId, setActiveId] = useState(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
@@ -97,6 +125,10 @@ export default function App() {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(chats));
   }, [chats]);
 
+  useEffect(() => {
+    localStorage.setItem(MEMORY_KEY, JSON.stringify(memory));
+  }, [memory]);
+
   function createChat() {
     const chat = makeChat();
     setChats((current) => [chat, ...current]);
@@ -105,6 +137,15 @@ export default function App() {
   }
 
   function updateMessages(messages, { newVersion = false } = {}) {
+    const latestUserMessage = [...messages]
+      .reverse()
+      .find((message) => message.role === "user" && message.content?.trim());
+    const detectedName = latestUserMessage ? detectName(latestUserMessage.content) : null;
+
+    if (detectedName) {
+      setMemory((current) => ({ ...current, name: detectedName }));
+    }
+
     setChats((current) =>
       current.map((chat) => {
         if (chat.id !== activeId) return chat;
@@ -182,7 +223,7 @@ export default function App() {
             </button>
           </div>
 
-          <button className="new-chat" onClick={createChat}>
+          <button className="new-chat" onClick={createChat} type="button">
             ＋ <span>New chat</span>
           </button>
 
@@ -201,6 +242,7 @@ export default function App() {
                       setActiveId(chat.id);
                       setSidebarOpen(false);
                     }}
+                    type="button"
                   >
                     <span className="chat-icon">◌</span>
                     <span className="chat-title">{chat.title}</span>
@@ -226,7 +268,9 @@ export default function App() {
               ))}
           </div>
 
-          <div className="sidebar-foot">Chats are saved on this device.</div>
+          <div className="sidebar-foot">
+            {memory.name ? `Remembering: ${memory.name}` : "Chats are saved on this device."}
+          </div>
         </aside>
 
         {sidebarOpen && (
@@ -234,6 +278,7 @@ export default function App() {
             className="sidebar-overlay mobile-only"
             onClick={() => setSidebarOpen(false)}
             aria-label="Close sidebar"
+            type="button"
           />
         )}
 
@@ -243,6 +288,7 @@ export default function App() {
               className="icon-button mobile-only"
               onClick={() => setSidebarOpen(true)}
               aria-label="Open sidebar"
+              type="button"
             >
               ☰
             </button>
@@ -268,6 +314,7 @@ export default function App() {
             onMessagesChange={updateMessages}
             versions={activeChat?.versions || []}
             onRestoreVersion={restoreVersion}
+            memory={memory}
           />
         </div>
       </section>
