@@ -17,30 +17,60 @@ export default function Chat({ messages, onAddMessage }) {
     const text = input.trim();
     if (!text || loading) return;
 
-    onAddMessage({ id: crypto.randomUUID(), role: "user", content: text });
+    const userMessage = { id: crypto.randomUUID(), role: "user", content: text };
+    const history = [...messages, userMessage];
+    onAddMessage(userMessage);
     setInput("");
     setLoading(true);
+
+    const assistantId = crypto.randomUUID();
+    onAddMessage({ id: assistantId, role: "assistant", content: "" });
 
     try {
       const response = await fetch(`${API_URL}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: text })
+        body: JSON.stringify({
+          messages: history.map(({ role, content }) => ({ role, content }))
+        })
       });
 
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Request failed");
+      if (!response.ok) {
+        let errorMessage = "Request failed";
+        try {
+          const data = await response.json();
+          errorMessage = data.error || errorMessage;
+        } catch {}
+        throw new Error(errorMessage);
+      }
 
-      onAddMessage({
-        id: crypto.randomUUID(),
-        role: "assistant",
-        content: data.reply || "I couldn't generate a response."
-      });
+      if (!response.body) throw new Error("Streaming is not supported by this browser.");
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let reply = "";
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        reply += decoder.decode(value, { stream: true });
+
+        onAddMessage({
+          id: assistantId,
+          role: "assistant",
+          content: reply,
+          replace: true
+        });
+      }
+
+      reply += decoder.decode();
+      onAddMessage({ id: assistantId, role: "assistant", content: reply, replace: true });
     } catch (error) {
       onAddMessage({
-        id: crypto.randomUUID(),
+        id: assistantId,
         role: "assistant",
-        content: `Sorry, I couldn't respond. ${error.message}`
+        content: `Sorry, I couldn't respond. ${error.message}`,
+        replace: true
       });
     } finally {
       setLoading(false);
@@ -58,7 +88,7 @@ export default function Chat({ messages, onAddMessage }) {
     <div className="chat-layout">
       <div className="messages" aria-live="polite">
         {messages.map((message) => <Message key={message.id} {...message} />)}
-        {loading && (
+        {loading && messages.at(-1)?.role !== "assistant" && (
           <div className="message-row assistant">
             <div className="avatar">AI</div>
             <div className="message-bubble typing">
@@ -81,7 +111,7 @@ export default function Chat({ messages, onAddMessage }) {
         />
         <button type="submit" disabled={!input.trim() || loading} aria-label="Send message">➤</button>
       </form>
-      <p className="disclaimer">IM AI can make mistakes. Check important information.</p>
+      <p className="disclaimer">V3 · Conversation memory is saved locally. IM AI can make mistakes.</p>
     </div>
   );
 }
