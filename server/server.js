@@ -57,6 +57,9 @@ function cleanMessages(value) {
       return Array.isArray(item.content) && item.content.length > 0;
     });
 
+  // The user turn must be last for the vision model/provider combination used here.
+  // If a caller accidentally sends an assistant turn last, keep the API request valid by
+  // adding a user continuation. Normal chat requests already end with the real user turn.
   const last = messages.at(-1);
   if (last?.role === "assistant") {
     messages.push({ role: "user", content: "Please continue from the conversation above." });
@@ -97,22 +100,82 @@ function buildSystemPrompt(memory) {
   return lines.join(" ");
 }
 
+async function readError(response) {
+  const text = await response.text();
+  let detail = text;
+  try {
+    const parsed = JSON.parse(text);
+    detail = parsed?.error?.message || parsed?.error || text;
+  } catch {}
+  return {
+    detail: String(detail),
+    retryAfter: response.headers.get("retry-after")
+  };
+}
+
+function sendJsonError(res, status, error, modelName, retryAfter = null) {
+  return res.status(status).json({
+    error,
+    status,
+    model: modelName,
+    retryAfter
+  });
+}
+
 app.post("/chat", async (req, res) => {
   try {
     if (!apiKey) {
-      return res.status(500).json({
-        error: "OPENROUTER_API_KEY is not configured. Add it to server/.env and restart the server."
-      });
+      return sendJsonError(
+        res,
+        500,
+        "OPENROUTER_API_KEY is not configured. Add it to server/.env and restart the server.",
+        model
+      );
     }
 
     const messages = cleanMessages(req.body?.messages);
     const memory = req.body?.memory && typeof req.body.memory === "object" ? req.body.memory : {};
     const hasImage = containsImage(messages);
-    const selectedModel = hasImage
-      ? visionModel
-      : (typeof req.body?.model === "string" && req.body.model ? req.body.model : model);
+    const selectedModel = hasImage ? visionModel : (typeof req.body?.model === "string" && req.body.model ? req.body.model : model);
 
-    if (!messages.length) return res.status(400).json({ error: "Messages are required." });
+    if (!messages.length) return sendJsonError(res, 400, "Messages are required.", selectedModel);
+
+    // Image calls are deliberately non-streaming. This avoids provider-specific streaming
+    // turn validation issues and gives the multimodal model a complete request in one go.
+    if (hasImage) {
+      const upstream = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+          "HTTP-Referer": siteUrl,
+          "X-Title": siteName
+        },
+        body: JSON.stringify({
+          model: selectedModel,
+          messages: [
+            { role: "system", content: buildSystemPrompt(memory) },
+            ...messages
+          ],
+          stream: false
+        })
+      });
+
+      if (!upstream.ok) {
+        const { detail, retryAfter } = await readError(upstream);
+        console.error("OpenRouter vision error:", detail);
+        return sendJsonError(res, upstream.status, detail, selectedModel, retryAfter);
+      }
+
+      const data = await upstream.json();
+      const content = data?.choices?.[0]?.message?.content;
+      if (typeof content !== "string" || !content.trim()) {
+        return sendJsonError(res, 502, "The vision model returned an empty response.", selectedModel);
+      }
+
+      res.type("text/plain; charset=utf-8");
+      return res.send(content);
+    }
 
     const upstream = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
@@ -133,19 +196,8 @@ app.post("/chat", async (req, res) => {
     });
 
     if (!upstream.ok) {
-      const text = await upstream.text();
-      let detail = text;
-      try {
-        const parsed = JSON.parse(text);
-        detail = parsed?.error?.message || parsed?.error || text;
-      } catch {}
-      const retryAfter = upstream.headers.get("retry-after");
-      return res.status(upstream.status).json({
-        error: String(detail),
-        status: upstream.status,
-        retryAfter,
-        model: selectedModel
-      });
+      const { detail, retryAfter } = await readError(upstream);
+      return sendJsonError(res, upstream.status, detail, selectedModel, retryAfter);
     }
 
     res.status(200);
@@ -191,7 +243,7 @@ app.post("/chat", async (req, res) => {
     console.error("OpenRouter API Error:", error);
     const status = Number.isInteger(error?.status) && error.status >= 400 && error.status < 600 ? error.status : 500;
     if (!res.headersSent) {
-      return res.status(status).json({ error: error?.message || "OpenRouter request failed.", status, model });
+      return sendJsonError(res, status, error?.message || "OpenRouter request failed.", model);
     }
     res.end();
   }
