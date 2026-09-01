@@ -127,6 +127,7 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [session, setSession] = useState(null);
+  const [authChecked, setAuthChecked] = useState(!supabaseConfigured);
   const [cloudReady, setCloudReady] = useState(!supabaseConfigured);
   const [cloudStatus, setCloudStatus] = useState(supabaseConfigured ? "Connecting…" : "Local only");
 
@@ -134,7 +135,9 @@ export default function App() {
 
   const visibleChats = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    return [...chats].sort((a, b) => b.updatedAt - a.updatedAt).filter((chat) => !needle || chat.title.toLowerCase().includes(needle));
+    return [...chats]
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .filter((chat) => !needle || chat.title.toLowerCase().includes(needle));
   }, [chats, query]);
 
   useEffect(() => {
@@ -154,12 +157,17 @@ export default function App() {
     if (!supabaseConfigured || !supabase) return undefined;
 
     let mounted = true;
+
     supabase.auth.getSession().then(({ data }) => {
-      if (mounted) setSession(data.session || null);
+      if (!mounted) return;
+      setSession(data.session || null);
+      setAuthChecked(true);
     });
 
     const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
-      if (mounted) setSession(nextSession || null);
+      if (!mounted) return;
+      setSession(nextSession || null);
+      setAuthChecked(true);
     });
 
     return () => {
@@ -172,11 +180,12 @@ export default function App() {
     if (!supabaseConfigured || !supabase) return;
     if (!session?.user?.id) {
       setCloudReady(true);
-      setCloudStatus("Local only");
+      setCloudStatus("Sign in to sync");
       return;
     }
 
     let cancelled = false;
+
     async function loadCloud() {
       setCloudReady(false);
       setCloudStatus("Loading cloud…");
@@ -304,6 +313,26 @@ export default function App() {
     updateMessages(structuredClone(version.messages), { newVersion: true, versionLabel: `Before restoring ${version.label || "version"}` });
   }
 
+  if (supabaseConfigured && !authChecked) {
+    return (
+      <main className="auth-screen">
+        <div className="auth-loading">Loading IM AI…</div>
+      </main>
+    );
+  }
+
+  if (supabaseConfigured && !session) {
+    return (
+      <main className="auth-screen">
+        <div className="auth-card">
+          <div className="auth-brand"><div className="brand-mark">IM</div><div><h1>IM AI</h1><p>Your personal AI workspace</p></div></div>
+          <AuthPanel session={session} onSession={setSession} />
+          <p className="auth-local-note">Sign in to save chats and memory to your Supabase account.</p>
+        </div>
+      </main>
+    );
+  }
+
   return (
     <main className="app-shell">
       <section className="chat-card">
@@ -335,7 +364,7 @@ export default function App() {
           </div>
 
           <div className="sidebar-foot">
-            <div className="cloud-state"><span className="status-dot" /> {cloudStatus}</div>
+            <div className="cloud-state"><span className="status-dot" /> {session ? cloudStatus : "Sign in to sync"}</div>
             {memory.name ? `Memory: ${memory.name}${memory.facts?.length ? ` · ${memory.facts.length} fact${memory.facts.length === 1 ? "" : "s"}` : ""}` : "Chats and memory are saved on this device."}
             {supabaseConfigured && <AuthPanel session={session} onSession={setSession} />}
           </div>
