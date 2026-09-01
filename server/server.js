@@ -142,13 +142,13 @@ app.post("/chat", async (req, res) => {
     const messages = cleanMessages(req.body?.messages);
     const memory = req.body?.memory && typeof req.body.memory === "object" ? req.body.memory : {};
     const hasImage = containsImage(messages);
-    const selectedModel = hasImage ? visionModel : (typeof req.body?.model === "string" && req.body.model ? req.body.model : model);
+    const selectedModel = hasImage
+      ? visionModel
+      : (typeof req.body?.model === "string" && req.body.model ? req.body.model : model);
 
     if (!messages.length) return sendJsonError(res, 400, "Messages are required.", selectedModel);
 
     if (hasImage) {
-      // Vision endpoints can reject mixed-role histories with provider-specific
-      // "model turn" validation. Send only the current image-bearing user turn.
       const imageTurn = [...messages].reverse().find(
         (message) => message.role === "user" && Array.isArray(message.content) && message.content.some((part) => part.type === "image_url")
       );
@@ -157,14 +157,17 @@ app.post("/chat", async (req, res) => {
 
       const userText = imageTurn.content.filter((part) => part.type === "text");
       const userImages = imageTurn.content.filter((part) => part.type === "image_url");
-      const fallbackText = userText.length ? userText : [{ type: "text", text: "Describe and analyze this image." }];
+      const fallbackText = userText.length
+        ? userText
+        : [{ type: "text", text: "Describe and analyze this image." }];
 
-      const visionMessages = [
-        {
-          role: "user",
-          content: [...fallbackText, ...userImages]
-        }
-      ];
+      // Important: send only one user turn for vision requests.
+      // Some OpenRouter vision providers reject any prompt history containing
+      // a system/model turn combination with `Requests ending with a model turn...`.
+      const visionMessages = [{
+        role: "user",
+        content: [...fallbackText, ...userImages]
+      }];
 
       const upstream = await callOpenRouter({
         selectedModel,
