@@ -57,9 +57,6 @@ function cleanMessages(value) {
       return Array.isArray(item.content) && item.content.length > 0;
     });
 
-  // The user turn must be last for the vision model/provider combination used here.
-  // If a caller accidentally sends an assistant turn last, keep the API request valid by
-  // adding a user continuation. Normal chat requests already end with the real user turn.
   const last = messages.at(-1);
   if (last?.role === "assistant") {
     messages.push({ role: "user", content: "Please continue from the conversation above." });
@@ -107,18 +104,27 @@ async function readError(response) {
     const parsed = JSON.parse(text);
     detail = parsed?.error?.message || parsed?.error || text;
   } catch {}
-  return {
-    detail: String(detail),
-    retryAfter: response.headers.get("retry-after")
-  };
+  return { detail: String(detail), retryAfter: response.headers.get("retry-after") };
 }
 
 function sendJsonError(res, status, error, modelName, retryAfter = null) {
-  return res.status(status).json({
-    error,
-    status,
-    model: modelName,
-    retryAfter
+  return res.status(status).json({ error, status, model: modelName, retryAfter });
+}
+
+async function callOpenRouter({ selectedModel, messages, stream }) {
+  return fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+      "HTTP-Referer": siteUrl,
+      "X-Title": siteName
+    },
+    body: JSON.stringify({
+      model: selectedModel,
+      messages,
+      stream
+    })
   });
 }
 
@@ -140,25 +146,30 @@ app.post("/chat", async (req, res) => {
 
     if (!messages.length) return sendJsonError(res, 400, "Messages are required.", selectedModel);
 
-    // Image calls are deliberately non-streaming. This avoids provider-specific streaming
-    // turn validation issues and gives the multimodal model a complete request in one go.
     if (hasImage) {
-      const upstream = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-          "HTTP-Referer": siteUrl,
-          "X-Title": siteName
-        },
-        body: JSON.stringify({
-          model: selectedModel,
-          messages: [
-            { role: "system", content: buildSystemPrompt(memory) },
-            ...messages
-          ],
-          stream: false
-        })
+      // Vision endpoints can reject mixed-role histories with provider-specific
+      // "model turn" validation. Send only the current image-bearing user turn.
+      const imageTurn = [...messages].reverse().find(
+        (message) => message.role === "user" && Array.isArray(message.content) && message.content.some((part) => part.type === "image_url")
+      );
+
+      if (!imageTurn) return sendJsonError(res, 400, "An image user message is required.", selectedModel);
+
+      const userText = imageTurn.content.filter((part) => part.type === "text");
+      const userImages = imageTurn.content.filter((part) => part.type === "image_url");
+      const fallbackText = userText.length ? userText : [{ type: "text", text: "Describe and analyze this image." }];
+
+      const visionMessages = [
+        {
+          role: "user",
+          content: [...fallbackText, ...userImages]
+        }
+      ];
+
+      const upstream = await callOpenRouter({
+        selectedModel,
+        messages: visionMessages,
+        stream: false
       });
 
       if (!upstream.ok) {
@@ -177,22 +188,10 @@ app.post("/chat", async (req, res) => {
       return res.send(content);
     }
 
-    const upstream = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-        "HTTP-Referer": siteUrl,
-        "X-Title": siteName
-      },
-      body: JSON.stringify({
-        model: selectedModel,
-        messages: [
-          { role: "system", content: buildSystemPrompt(memory) },
-          ...messages
-        ],
-        stream: true
-      })
+    const upstream = await callOpenRouter({
+      selectedModel,
+      messages: [{ role: "system", content: buildSystemPrompt(memory) }, ...messages],
+      stream: true
     });
 
     if (!upstream.ok) {
