@@ -8,7 +8,7 @@ const app = express();
 const port = Number(process.env.PORT || 3000);
 const apiKey = process.env.OPENROUTER_API_KEY;
 const model = process.env.OPENROUTER_MODEL || "nvidia/nemotron-3.5-lightning:free";
-const visionModel = process.env.OPENROUTER_VISION_MODEL || "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free";
+const visionModel = process.env.OPENROUTER_VISION_MODEL || "google/gemma-4-31b-it:free";
 const siteUrl = process.env.OPENROUTER_SITE_URL || "http://localhost:5173";
 const siteName = process.env.OPENROUTER_SITE_NAME || "IM AI";
 
@@ -57,8 +57,6 @@ function cleanMessages(value) {
       return Array.isArray(item.content) && item.content.length > 0;
     });
 
-  // OpenRouter providers are more reliable when the prompt ends on a user turn.
-  // For a request accidentally ending after an assistant turn, add a small user continuation.
   const last = messages.at(-1);
   if (last?.role === "assistant") {
     messages.push({ role: "user", content: "Please continue from the conversation above." });
