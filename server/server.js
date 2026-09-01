@@ -24,15 +24,31 @@ app.get("/health", (_req, res) => {
   });
 });
 
+function normalizeImageUrl(value) {
+  if (typeof value === "string") return value;
+  if (value && typeof value === "object" && typeof value.url === "string") return value.url;
+  return "";
+}
+
 function cleanContent(content) {
   if (typeof content === "string") return content.trim();
   if (!Array.isArray(content)) return "";
 
-  return content.filter(Boolean).map((part) => {
-    if (part.type === "text") return { type: "text", text: String(part.text || "").trim() };
-    if (part.type === "image_url") return { type: "image_url", image_url: part.image_url };
-    return null;
-  }).filter((part) => part && (part.type === "image_url" || part.text));
+  return content
+    .map((part) => {
+      if (!part || typeof part !== "object") return null;
+      if (part.type === "text") {
+        const text = String(part.text || "").trim();
+        return text ? { type: "text", text } : null;
+      }
+      if (part.type === "image_url") {
+        const url = normalizeImageUrl(part.image_url);
+        if (!url) return null;
+        return { type: "image_url", image_url: url };
+      }
+      return null;
+    })
+    .filter(Boolean);
 }
 
 function cleanMessages(value) {
@@ -48,7 +64,11 @@ function cleanMessages(value) {
 }
 
 function containsImage(messages) {
-  return messages.some((message) => Array.isArray(message.content) && message.content.some((part) => part.type === "image_url"));
+  return messages.some(
+    (message) =>
+      Array.isArray(message.content) &&
+      message.content.some((part) => part.type === "image_url")
+  );
 }
 
 function buildSystemPrompt(memory) {
@@ -60,13 +80,19 @@ function buildSystemPrompt(memory) {
     "Do not invent memories. Only use persistent memory explicitly supplied.",
     "When the user attaches an image, use it to answer the user's question."
   ];
+
   const memoryItems = [];
   if (memory && typeof memory === "object") {
-    if (typeof memory.name === "string" && memory.name.trim()) memoryItems.push(`The user's name is ${memory.name.trim()}.`);
+    if (typeof memory.name === "string" && memory.name.trim()) {
+      memoryItems.push(`The user's name is ${memory.name.trim()}.`);
+    }
     if (Array.isArray(memory.facts)) {
-      for (const fact of memory.facts.slice(0, 20)) if (typeof fact === "string" && fact.trim()) memoryItems.push(fact.trim());
+      for (const fact of memory.facts.slice(0, 20)) {
+        if (typeof fact === "string" && fact.trim()) memoryItems.push(fact.trim());
+      }
     }
   }
+
   if (memoryItems.length) lines.push(`Persistent user memory: ${memoryItems.join(" ")}`);
   return lines.join(" ");
 }
@@ -92,13 +118,24 @@ async function callMistral({ selectedModel, messages, stream }) {
       Authorization: `Bearer ${apiKey}`,
       "Content-Type": "application/json"
     },
-    body: JSON.stringify({ model: selectedModel, messages, stream })
+    body: JSON.stringify({
+      model: selectedModel,
+      messages,
+      stream
+    })
   });
 }
 
 app.post("/chat", async (req, res) => {
   try {
-    if (!apiKey) return sendJsonError(res, 500, "MISTRAL_API_KEY is not configured. Add it to server/.env and restart the server.", model);
+    if (!apiKey) {
+      return sendJsonError(
+        res,
+        500,
+        "MISTRAL_API_KEY is not configured. Add it to server/.env and restart the server.",
+        model
+      );
+    }
 
     const incoming = cleanMessages(req.body?.messages);
     const memory = req.body?.memory && typeof req.body.memory === "object" ? req.body.memory : {};
@@ -108,15 +145,30 @@ app.post("/chat", async (req, res) => {
     if (!incoming.length) return sendJsonError(res, 400, "Messages are required.", selectedModel);
 
     if (hasImage) {
-      const imageTurn = [...incoming].reverse().find((message) => message.role === "user" && Array.isArray(message.content) && message.content.some((part) => part.type === "image_url"));
-      if (!imageTurn) return sendJsonError(res, 400, "An image user message is required.", selectedModel);
+      const imageTurn = [...incoming]
+        .reverse()
+        .find(
+          (message) =>
+            message.role === "user" &&
+            Array.isArray(message.content) &&
+            message.content.some((part) => part.type === "image_url")
+        );
+
+      if (!imageTurn) {
+        return sendJsonError(res, 400, "An image user message is required.", selectedModel);
+      }
+
+      // Mistral's vision Chat Completions API expects an image_url value as a
+      // string (URL or base64 data URL), not the OpenAI-style { url } object.
+      // Send the system instruction plus one clean user multimodal turn.
+      const visionMessages = [
+        { role: "system", content: buildSystemPrompt(memory) },
+        { role: "user", content: imageTurn.content }
+      ];
 
       const upstream = await callMistral({
         selectedModel,
-        messages: [
-          { role: "system", content: buildSystemPrompt(memory) },
-          { role: "user", content: imageTurn.content }
-        ],
+        messages: visionMessages,
         stream: false
       });
 
@@ -128,7 +180,15 @@ app.post("/chat", async (req, res) => {
 
       const data = await upstream.json();
       const content = data?.choices?.[0]?.message?.content;
-      if (typeof content !== "string" || !content.trim()) return sendJsonError(res, 502, "The vision model returned an empty response.", selectedModel);
+      if (typeof content !== "string" || !content.trim()) {
+        return sendJsonError(
+          res,
+          502,
+          "The vision model returned an empty response.",
+          selectedModel
+        );
+      }
+
       res.type("text/plain; charset=utf-8");
       return res.send(content);
     }
@@ -155,16 +215,20 @@ app.post("/chat", async (req, res) => {
 
     const decoder = new TextDecoder();
     let buffer = "";
+
     while (true) {
       const { value, done } = await reader.read();
       buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+
       const events = buffer.split("\n\n");
       buffer = events.pop() || "";
+
       for (const event of events) {
         for (const line of event.split("\n")) {
           if (!line.startsWith("data:")) continue;
           const payload = line.slice(5).trim();
           if (!payload || payload === "[DONE]") continue;
+
           try {
             const json = JSON.parse(payload);
             const text = json?.choices?.[0]?.delta?.content;
@@ -172,13 +236,26 @@ app.post("/chat", async (req, res) => {
           } catch {}
         }
       }
+
       if (done) break;
     }
+
     res.end();
   } catch (error) {
     console.error("Mistral API Error:", error);
-    const status = Number.isInteger(error?.status) && error.status >= 400 && error.status < 600 ? error.status : 500;
-    if (!res.headersSent) return sendJsonError(res, status, error?.message || "Mistral request failed.", model);
+    const status =
+      Number.isInteger(error?.status) && error.status >= 400 && error.status < 600
+        ? error.status
+        : 500;
+
+    if (!res.headersSent) {
+      return sendJsonError(
+        res,
+        status,
+        error?.message || "Mistral request failed.",
+        model
+      );
+    }
     res.end();
   }
 });
