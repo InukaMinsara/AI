@@ -8,7 +8,7 @@ const app = express();
 const port = Number(process.env.PORT || 3000);
 const apiKey = process.env.OPENROUTER_API_KEY;
 const model = process.env.OPENROUTER_MODEL || "nvidia/nemotron-3.5-lightning:free";
-const visionModel = process.env.OPENROUTER_VISION_MODEL || "google/gemma-4-31b-it:free";
+const visionModel = process.env.OPENROUTER_VISION_MODEL || "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free";
 const siteUrl = process.env.OPENROUTER_SITE_URL || "http://localhost:5173";
 const siteName = process.env.OPENROUTER_SITE_NAME || "IM AI";
 
@@ -30,27 +30,41 @@ function cleanContent(content) {
   if (typeof content === "string") return content.trim();
   if (!Array.isArray(content)) return "";
 
-  return content.filter((part) => {
-    if (!part || typeof part !== "object") return false;
-    if (part.type === "text") return typeof part.text === "string" && part.text.trim();
-    if (part.type === "image_url") return typeof part.image_url?.url === "string" && part.image_url.url.startsWith("data:image/");
-    return false;
-  }).map((part) => {
-    if (part.type === "text") return { type: "text", text: part.text.trim() };
-    return { type: "image_url", image_url: { url: part.image_url.url } };
-  });
+  return content
+    .filter((part) => {
+      if (!part || typeof part !== "object") return false;
+      if (part.type === "text") return typeof part.text === "string" && part.text.trim();
+      if (part.type === "image_url") {
+        const url = part.image_url?.url;
+        return typeof url === "string" && (url.startsWith("data:image/") || /^https?:\/\//i.test(url));
+      }
+      return false;
+    })
+    .map((part) => {
+      if (part.type === "text") return { type: "text", text: part.text.trim() };
+      return { type: "image_url", image_url: { url: part.image_url.url } };
+    });
 }
 
 function cleanMessages(value) {
   if (!Array.isArray(value)) return [];
-  return value
-    .filter((item) => item && ["user", "assistant", "system"].includes(item.role))
+
+  const messages = value
+    .filter((item) => item && (item.role === "user" || item.role === "assistant" || item.role === "system"))
     .map(({ role, content }) => ({ role, content: cleanContent(content) }))
     .filter((item) => {
       if (typeof item.content === "string") return Boolean(item.content);
       return Array.isArray(item.content) && item.content.length > 0;
-    })
-    .slice(-60);
+    });
+
+  // OpenRouter providers are more reliable when the prompt ends on a user turn.
+  // For a request accidentally ending after an assistant turn, add a small user continuation.
+  const last = messages.at(-1);
+  if (last?.role === "assistant") {
+    messages.push({ role: "user", content: "Please continue from the conversation above." });
+  }
+
+  return messages.slice(-60);
 }
 
 function containsImage(messages) {
@@ -95,10 +109,10 @@ app.post("/chat", async (req, res) => {
 
     const messages = cleanMessages(req.body?.messages);
     const memory = req.body?.memory && typeof req.body.memory === "object" ? req.body.memory : {};
-    const requestedModel = typeof req.body?.model === "string" ? req.body.model : "";
-    const selectedModel = containsImage(messages) || requestedModel === "vision"
+    const hasImage = containsImage(messages);
+    const selectedModel = hasImage
       ? visionModel
-      : model;
+      : (typeof req.body?.model === "string" && req.body.model ? req.body.model : model);
 
     if (!messages.length) return res.status(400).json({ error: "Messages are required." });
 
@@ -128,7 +142,12 @@ app.post("/chat", async (req, res) => {
         detail = parsed?.error?.message || parsed?.error || text;
       } catch {}
       const retryAfter = upstream.headers.get("retry-after");
-      return res.status(upstream.status).json({ error: String(detail), status: upstream.status, retryAfter });
+      return res.status(upstream.status).json({
+        error: String(detail),
+        status: upstream.status,
+        retryAfter,
+        model: selectedModel
+      });
     }
 
     res.status(200);
